@@ -1,5 +1,5 @@
 from messages import SayText2
-from listeners.tick import GameThread
+from .thread import WebSocketThread
 import enum
 import websocket
 import time
@@ -16,8 +16,13 @@ class GameStatus(enum.Enum):
 
 
 GAME_STATUS = GameStatus.Idle
-WS_CONNECTED = False
-WS_CONNECTION = None
+WS_THREAD = None
+PLUGIN_RUNNING = True
+
+
+def plugin_running():
+    global PLUGIN_RUNNING
+    return PLUGIN_RUNNING
 
 
 def update_game_status(status: GameStatus):
@@ -25,65 +30,57 @@ def update_game_status(status: GameStatus):
     GAME_STATUS = status
 
 
-class WebSocketRunner():
-    def start_ws(self):
-        global WS_CONNECTION
-        while True:
-            try:
-                WS_CONNECTION = websocket.WebSocketApp(
-                    url="ws://192.168.0.11:1337/ws/server",
-                    on_close=self.on_ws_close,
-                    on_message=self.on_ws_message,
-                    on_error=self.on_ws_error,
-                    on_open=self.on_ws_open
-                )
-                WS_CONNECTED = True
-                WS_CONNECTION.on_open = self.on_ws_open
-                WS_CONNECTION.run_forever(
-                    skip_utf8_validation=True, ping_interval=10, ping_timeout=8)
-            except Exception as e:
-                WS_CONNECTED = False
-                print("Websocket connection Error  : {0}".format(e))
-                time.sleep(5)
+def on_ws_open(ws):
+    refresh_server_status()
 
-    def on_ws_open(self, ws):
-        refresh_server_status()
 
-    def on_ws_close(self, ws, close_status_code, close_msg):
-        global WS_CONNECTED
-        WS_CONNECTED = False
+def on_ws_close(ws, close_status_code, close_msg):
+    pass
 
-    def on_ws_message(self, ws, message):
-        SayText2(message).send()
 
-    def on_ws_error(self, ws, error):
-        global WS_CONNECTED
-        WS_CONNECTED = False
-        # ws.send("Hello, server")
+def on_ws_message(ws, message):
+    SayText2(message).send()
+
+
+def on_ws_error(ws, error):
+    pass
 
 
 def send_ws_msg(action, data):
-    global WS_CONNECTION
-    if WS_CONNECTION is None:
+    conn = WS_THREAD.get_ws_conn()
+    if conn is None:
+        print("Trying to send a message but the websocket connection is not open")
         return
-    WS_CONNECTION.send(json.dumps({
+    conn.send(json.dumps({
         "action": action,
         "data": data
     }))
 
 
 def refresh_server_status():
-    global GAME_STATUS
     send_ws_msg("server_2_backend_update_status", {
         "status": GAME_STATUS.name
     })
 
 
 def bootstrap_websocket():
-    ws_runner = WebSocketRunner()
-    thread = GameThread(target=ws_runner.start_ws)
-    thread.daemon = True
-    thread.start()
+    global WS_THREAD
+    WS_THREAD = WebSocketThread(url="ws://192.168.0.11:1337/ws/server", on_open=on_ws_open, on_close=on_ws_close,
+                                on_message=on_ws_message, on_error=on_ws_error, cond_run_ws=plugin_running)
+    WS_THREAD.start()
+
+
+def stop_websocket():
+    global WS_THREAD
+    global PLUGIN_RUNNING
+    PLUGIN_RUNNING = False
+
+    conn = WS_THREAD.get_ws_conn()
+    if conn:
+        conn.close()
+
+    WS_THREAD.stop()
+    WS_THREAD = None
 
 
 def load():
@@ -91,4 +88,4 @@ def load():
 
 
 def unload():
-    pass
+    stop_websocket()
